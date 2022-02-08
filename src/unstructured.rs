@@ -88,6 +88,10 @@ impl<'a> Unstructured<'a> {
         Unstructured::Slice(data)
     }
 
+    pub fn from_iterator<I: 'static + Iterator<Item = u8>>(it: I) -> Self {
+        Unstructured::Iterator(Box::new(it))
+    }
+
     #[cfg(test)]
     fn as_slice(&self) -> Option<&[u8]> {
         match self {
@@ -773,8 +777,29 @@ mod tests {
     }
 
     #[test]
+    fn iterator_int_in_range_of_one() {
+        let mut u = Unstructured::from_iterator(std::iter::successors(Some(0), |i| Some(i + 1)));
+        let x = u.int_in_range(0..=0).unwrap();
+        assert_eq!(x, 0);
+        let choice = *u.choose(&[42]).unwrap();
+        assert_eq!(choice, 42)
+    }
+
+    #[test]
     fn int_in_range_uses_minimal_amount_of_bytes() {
         let mut u = Unstructured::new(&[1]);
+        u.int_in_range::<u8>(0..=u8::MAX).unwrap();
+
+        let mut u = Unstructured::new(&[1]);
+        u.int_in_range::<u32>(0..=u8::MAX as u32).unwrap();
+
+        let mut u = Unstructured::new(&[1]);
+        u.int_in_range::<u32>(0..=u8::MAX as u32 + 1).unwrap_err();
+    }
+
+    #[test]
+    fn iterator_int_in_range_uses_minimal_amount_of_bytes() {
+        let mut u = Unstructured::from_iterator(std::iter::successors(Some(0), |i| Some(i + 1)));
         u.int_in_range::<u8>(0..=u8::MAX).unwrap();
 
         let mut u = Unstructured::new(&[1]);
