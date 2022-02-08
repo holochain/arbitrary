@@ -70,6 +70,8 @@ use std::{mem, ops};
 pub enum Unstructured<'a> {
     /// Data in the form of a preallocated slice
     Slice(&'a [u8]),
+    /// Data in the form of an infinite iterator
+    Iterator(Box<dyn Iterator<Item = u8>>),
 }
 
 impl<'a> Unstructured<'a> {
@@ -90,6 +92,7 @@ impl<'a> Unstructured<'a> {
     fn as_slice(&self) -> Option<&[u8]> {
         match self {
             Self::Slice(data) => Some(data),
+            Self::Iterator(_) => None,
         }
     }
 
@@ -116,6 +119,7 @@ impl<'a> Unstructured<'a> {
     pub fn is_empty(&self) -> bool {
         match self {
             Self::Slice(data) => data.is_empty(),
+            Self::Iterator(_) => false,
         }
     }
 
@@ -209,6 +213,7 @@ impl<'a> Unstructured<'a> {
 
     fn arbitrary_byte_size(&mut self) -> Result<usize> {
         match self {
+            Self::Iterator(it) => Ok(Self::int_in_range_impl(0..=u64::MAX, it)?.0 as usize),
             Self::Slice(data) => {
                 if data.is_empty() {
                     Ok(0)
@@ -288,6 +293,10 @@ impl<'a> Unstructured<'a> {
         T: Int,
     {
         match self {
+            Self::Iterator(it) => {
+                let (result, _) = Self::int_in_range_impl(range, it)?;
+                Ok(result)
+            }
             Self::Slice(data) => {
                 let (result, bytes_consumed) =
                     Self::int_in_range_impl(range, data.iter().cloned())?;
@@ -412,6 +421,9 @@ impl<'a> Unstructured<'a> {
     /// ```
     pub fn fill_buffer(&mut self, buffer: &mut [u8]) -> Result<()> {
         match self {
+            Self::Iterator(it) => {
+                buffer.fill_with(|| it.next().expect("Iterator must be infinite"))
+            }
             Self::Slice(data) => {
                 let n = std::cmp::min(buffer.len(), data.len());
                 buffer[..n].copy_from_slice(&data[..n]);
@@ -424,7 +436,33 @@ impl<'a> Unstructured<'a> {
         Ok(())
     }
 
-    /// Provide `size` bytes from the underlying raw data.
+    /// Provide `size` bytes from the underlying raw data as a Vec.
+    ///
+    /// This should only be called within an `Arbitrary` implementation. This is
+    /// a very low-level operation. You should generally prefer calling nested
+    /// `Arbitrary` implementations like `<Vec<u8>>::arbitrary` and
+    /// `String::arbitrary` over using this method directly.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use arbitrary::Unstructured;
+    ///
+    /// let mut u = Unstructured::new(&[1, 2, 3, 4]);
+    ///
+    /// assert!(u.bytes(2).unwrap() == vec![1, 2]);
+    /// assert!(u.bytes(2).unwrap() == vec![3, 4]);
+    /// ```
+    pub fn bytes(&mut self, size: usize) -> Result<Vec<u8>> {
+        match self {
+            Self::Iterator(it) => Ok(it.take(size).collect()),
+            Self::Slice(_) => Ok(self.byte_slice(size)?.to_vec()),
+        }
+    }
+
+    /// Provide `size` bytes from the underlying raw data as a slice, only
+    /// if the Unstructured data is in the form of a slice. Returns None
+    /// for iterator-backed data.
     ///
     /// This should only be called within an `Arbitrary` implementation. This is
     /// a very low-level operation. You should generally prefer calling nested
@@ -441,8 +479,9 @@ impl<'a> Unstructured<'a> {
     /// assert!(u.bytes(2).unwrap() == &[1, 2]);
     /// assert!(u.bytes(2).unwrap() == &[3, 4]);
     /// ```
-    pub fn bytes(&mut self, size: usize) -> Result<&'a [u8]> {
+    pub fn byte_slice(&mut self, size: usize) -> Result<&'a [u8]> {
         match self {
+            Self::Iterator(_) => Result::Err(Error::IteratorNotAllowed),
             Self::Slice(data) => {
                 if data.len() < size {
                     return Err(Error::NotEnoughData);
@@ -455,12 +494,13 @@ impl<'a> Unstructured<'a> {
         }
     }
 
-    /// Peek at `size` number of bytes of the underlying raw input.
+    /// Peek at `size` number of bytes of the underlying raw input if the input
+    /// is a slice and not an iterator.
     ///
     /// Does not consume the bytes, only peeks at them.
     ///
     /// Returns `None` if there are not `size` bytes left in the underlying raw
-    /// input.
+    /// input, or if the raw input is an iterator.
     ///
     /// # Example
     ///
@@ -478,6 +518,7 @@ impl<'a> Unstructured<'a> {
     /// ```
     pub fn peek_bytes(&self, size: usize) -> Option<&'a [u8]> {
         match self {
+            Self::Iterator(_) => None,
             Self::Slice(data) => data.get(..size),
         }
     }
@@ -485,6 +526,8 @@ impl<'a> Unstructured<'a> {
     /// Consume all of the rest of the remaining underlying bytes.
     ///
     /// Returns a slice of all the remaining, unconsumed bytes.
+    ///
+    /// Returns an empty slice if the raw input is an iterator.
     ///
     /// # Example
     ///
@@ -499,6 +542,7 @@ impl<'a> Unstructured<'a> {
     /// ```
     pub fn take_rest(self) -> &'a [u8] {
         match self {
+            Self::Iterator(_) => &[],
             Self::Slice(mut data) => mem::replace(&mut data, &[]),
         }
     }
@@ -525,6 +569,11 @@ impl<'a> Unstructured<'a> {
         self,
     ) -> Result<ArbitraryTakeRestIter<'a, ElementType>> {
         match self {
+            Self::Iterator(_) => Ok(ArbitraryTakeRestIter {
+                size: usize::MAX,
+                u: Some(self),
+                _marker: PhantomData,
+            }),
             Self::Slice(data) => {
                 let (lower, upper) = ElementType::size_hint(0);
 
