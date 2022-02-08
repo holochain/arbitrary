@@ -67,8 +67,9 @@ use std::{mem, ops};
 /// }
 /// # }
 /// ```
-pub struct Unstructured<'a> {
-    data: &'a [u8],
+pub enum Unstructured<'a> {
+    /// Data in the form of a preallocated slice
+    Slice(&'a [u8]),
 }
 
 impl<'a> Unstructured<'a> {
@@ -82,30 +83,14 @@ impl<'a> Unstructured<'a> {
     /// let u = Unstructured::new(&[1, 2, 3, 4]);
     /// ```
     pub fn new(data: &'a [u8]) -> Self {
-        Unstructured { data }
+        Unstructured::Slice(data)
     }
 
-    /// Get the number of remaining bytes of underlying data that are still
-    /// available.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use arbitrary::{Arbitrary, Unstructured};
-    ///
-    /// let mut u = Unstructured::new(&[1, 2, 3]);
-    ///
-    /// // Initially have three bytes of data.
-    /// assert_eq!(u.len(), 3);
-    ///
-    /// // Generating a `bool` consumes one byte from the underlying data, so
-    /// // we are left with two bytes afterwards.
-    /// let _ = bool::arbitrary(&mut u);
-    /// assert_eq!(u.len(), 2);
-    /// ```
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.data.len()
+    #[cfg(test)]
+    fn as_slice(&self) -> Option<&[u8]> {
+        match self {
+            Self::Slice(data) => Some(data),
+        }
     }
 
     /// Is the underlying unstructured data exhausted?
@@ -129,7 +114,9 @@ impl<'a> Unstructured<'a> {
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        match self {
+            Self::Slice(data) => data.is_empty(),
+        }
     }
 
     /// Generate an arbitrary instance of `A`.
@@ -221,47 +208,55 @@ impl<'a> Unstructured<'a> {
     }
 
     fn arbitrary_byte_size(&mut self) -> Result<usize> {
-        if self.data.is_empty() {
-            Ok(0)
-        } else if self.data.len() == 1 {
-            self.data = &[];
-            Ok(0)
-        } else {
-            // Take lengths from the end of the data, since the `libFuzzer` folks
-            // found that this lets fuzzers more efficiently explore the input
-            // space.
-            //
-            // https://github.com/rust-fuzz/libfuzzer-sys/blob/0c450753/libfuzzer/utils/FuzzedDataProvider.h#L92-L97
+        match self {
+            Self::Slice(data) => {
+                if data.is_empty() {
+                    Ok(0)
+                } else if data.len() == 1 {
+                    *data = &[];
+                    Ok(0)
+                } else {
+                    // Take lengths from the end of the data, since the `libFuzzer` folks
+                    // found that this lets fuzzers more efficiently explore the input
+                    // space.
+                    //
+                    // https://github.com/rust-fuzz/libfuzzer-sys/blob/0c450753/libfuzzer/utils/FuzzedDataProvider.h#L92-L97
 
-            // We only consume as many bytes as necessary to cover the entire
-            // range of the byte string.
-            let len = if self.data.len() <= std::u8::MAX as usize + 1 {
-                let bytes = 1;
-                let max_size = self.data.len() - bytes;
-                let (rest, for_size) = self.data.split_at(max_size);
-                self.data = rest;
-                Self::int_in_range_impl(0..=max_size as u8, for_size.iter().copied())?.0 as usize
-            } else if self.data.len() <= std::u16::MAX as usize + 1 {
-                let bytes = 2;
-                let max_size = self.data.len() - bytes;
-                let (rest, for_size) = self.data.split_at(max_size);
-                self.data = rest;
-                Self::int_in_range_impl(0..=max_size as u16, for_size.iter().copied())?.0 as usize
-            } else if self.data.len() <= std::u32::MAX as usize + 1 {
-                let bytes = 4;
-                let max_size = self.data.len() - bytes;
-                let (rest, for_size) = self.data.split_at(max_size);
-                self.data = rest;
-                Self::int_in_range_impl(0..=max_size as u32, for_size.iter().copied())?.0 as usize
-            } else {
-                let bytes = 8;
-                let max_size = self.data.len() - bytes;
-                let (rest, for_size) = self.data.split_at(max_size);
-                self.data = rest;
-                Self::int_in_range_impl(0..=max_size as u64, for_size.iter().copied())?.0 as usize
-            };
+                    // We only consume as many bytes as necessary to cover the entire
+                    // range of the byte string.
+                    let len = if data.len() <= std::u8::MAX as usize + 1 {
+                        let bytes = 1;
+                        let max_size = data.len() - bytes;
+                        let (rest, for_size) = data.split_at(max_size);
+                        *data = rest;
+                        Self::int_in_range_impl(0..=max_size as u8, for_size.iter().copied())?.0
+                            as usize
+                    } else if data.len() <= std::u16::MAX as usize + 1 {
+                        let bytes = 2;
+                        let max_size = data.len() - bytes;
+                        let (rest, for_size) = data.split_at(max_size);
+                        *data = rest;
+                        Self::int_in_range_impl(0..=max_size as u16, for_size.iter().copied())?.0
+                            as usize
+                    } else if data.len() <= std::u32::MAX as usize + 1 {
+                        let bytes = 4;
+                        let max_size = data.len() - bytes;
+                        let (rest, for_size) = data.split_at(max_size);
+                        *data = rest;
+                        Self::int_in_range_impl(0..=max_size as u32, for_size.iter().copied())?.0
+                            as usize
+                    } else {
+                        let bytes = 8;
+                        let max_size = data.len() - bytes;
+                        let (rest, for_size) = data.split_at(max_size);
+                        *data = rest;
+                        Self::int_in_range_impl(0..=max_size as u64, for_size.iter().copied())?.0
+                            as usize
+                    };
 
-            Ok(len)
+                    Ok(len)
+                }
+            }
         }
     }
 
@@ -292,9 +287,14 @@ impl<'a> Unstructured<'a> {
     where
         T: Int,
     {
-        let (result, bytes_consumed) = Self::int_in_range_impl(range, self.data.iter().cloned())?;
-        self.data = &self.data[bytes_consumed..];
-        Ok(result)
+        match self {
+            Self::Slice(data) => {
+                let (result, bytes_consumed) =
+                    Self::int_in_range_impl(range, data.iter().cloned())?;
+                *data = &data[bytes_consumed..];
+                Ok(result)
+            }
+        }
     }
 
     fn int_in_range_impl<T>(
@@ -411,12 +411,16 @@ impl<'a> Unstructured<'a> {
     /// assert_eq!(buf, [0, 0]);
     /// ```
     pub fn fill_buffer(&mut self, buffer: &mut [u8]) -> Result<()> {
-        let n = std::cmp::min(buffer.len(), self.data.len());
-        buffer[..n].copy_from_slice(&self.data[..n]);
-        for byte in buffer[n..].iter_mut() {
-            *byte = 0;
+        match self {
+            Self::Slice(data) => {
+                let n = std::cmp::min(buffer.len(), data.len());
+                buffer[..n].copy_from_slice(&data[..n]);
+                for byte in buffer[n..].iter_mut() {
+                    *byte = 0;
+                }
+                *data = &data[n..];
+            }
         }
-        self.data = &self.data[n..];
         Ok(())
     }
 
@@ -438,13 +442,17 @@ impl<'a> Unstructured<'a> {
     /// assert!(u.bytes(2).unwrap() == &[3, 4]);
     /// ```
     pub fn bytes(&mut self, size: usize) -> Result<&'a [u8]> {
-        if self.data.len() < size {
-            return Err(Error::NotEnoughData);
-        }
+        match self {
+            Self::Slice(data) => {
+                if data.len() < size {
+                    return Err(Error::NotEnoughData);
+                }
 
-        let (for_buf, rest) = self.data.split_at(size);
-        self.data = rest;
-        Ok(for_buf)
+                let (for_buf, rest) = data.split_at(size);
+                *data = rest;
+                Ok(for_buf)
+            }
+        }
     }
 
     /// Peek at `size` number of bytes of the underlying raw input.
@@ -469,7 +477,9 @@ impl<'a> Unstructured<'a> {
     /// assert!(u.peek_bytes(4).is_none());
     /// ```
     pub fn peek_bytes(&self, size: usize) -> Option<&'a [u8]> {
-        self.data.get(..size)
+        match self {
+            Self::Slice(data) => data.get(..size),
+        }
     }
 
     /// Consume all of the rest of the remaining underlying bytes.
@@ -487,8 +497,10 @@ impl<'a> Unstructured<'a> {
     ///
     /// assert_eq!(remaining, [1, 2, 3]);
     /// ```
-    pub fn take_rest(mut self) -> &'a [u8] {
-        mem::replace(&mut self.data, &[])
+    pub fn take_rest(self) -> &'a [u8] {
+        match self {
+            Self::Slice(mut data) => mem::replace(&mut data, &[]),
+        }
     }
 
     /// Provide an iterator over elements for constructing a collection
@@ -512,16 +524,20 @@ impl<'a> Unstructured<'a> {
     pub fn arbitrary_take_rest_iter<ElementType: Arbitrary<'a>>(
         self,
     ) -> Result<ArbitraryTakeRestIter<'a, ElementType>> {
-        let (lower, upper) = ElementType::size_hint(0);
+        match self {
+            Self::Slice(data) => {
+                let (lower, upper) = ElementType::size_hint(0);
 
-        let elem_size = upper.unwrap_or(lower * 2);
-        let elem_size = std::cmp::max(1, elem_size);
-        let size = self.len() / elem_size;
-        Ok(ArbitraryTakeRestIter {
-            size,
-            u: Some(self),
-            _marker: PhantomData,
-        })
+                let elem_size = upper.unwrap_or(lower * 2);
+                let elem_size = std::cmp::max(1, elem_size);
+                let size = data.len() / elem_size;
+                Ok(ArbitraryTakeRestIter {
+                    size,
+                    u: Some(self),
+                    _marker: PhantomData,
+                })
+            }
+        }
     }
 }
 
@@ -687,7 +703,7 @@ mod tests {
         let mut u = Unstructured::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 6]);
         // Should take one byte off the end
         assert_eq!(u.arbitrary_byte_size().unwrap(), 6);
-        assert_eq!(u.len(), 9);
+        assert_eq!(u.as_slice().unwrap().len(), 9);
         let mut v = vec![];
         v.resize(260, 0);
         v.push(1);
@@ -695,7 +711,7 @@ mod tests {
         let mut u = Unstructured::new(&v);
         // Should read two bytes off the end
         assert_eq!(u.arbitrary_byte_size().unwrap(), 0x104);
-        assert_eq!(u.len(), 260);
+        assert_eq!(u.as_slice().unwrap().len(), 260);
     }
 
     #[test]
