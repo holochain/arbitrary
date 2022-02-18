@@ -11,6 +11,9 @@ pub enum Error {
     NotEnoughData,
     /// The input bytes were not of the right format
     IncorrectFormat,
+    /// This operation can only be done with Slice-based unstructured data,
+    /// not iterators.
+    IteratorNotAllowed,
 }
 
 impl fmt::Display for Error {
@@ -27,6 +30,10 @@ impl fmt::Display for Error {
             Error::IncorrectFormat => write!(
                 f,
                 "The raw data is not of the correct format to construct this type"
+            ),
+            Error::IteratorNotAllowed => write!(
+                f,
+                "This operation can only be done with Slice-based unstructured data, not iterators."
             ),
         }
     }
